@@ -35,4 +35,4 @@ Built on [three.js](https://threejs.org) (MIT).
 
 Contact: munimversion2@gmail.com
 
-License: MIT.
+License: Apache-2.0.
