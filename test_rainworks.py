@@ -2,7 +2,8 @@
 
 Static checks always run. When Node.js is installed, the puzzle logic (the <script id="logic">
 block, which has no DOM or three.js) also runs: every level must be generated the same way twice,
-be a spanning tree of channels, start unsolved, and be solved by its par number of turns.
+be a spanning tree of channels, start unsolved, be solved by its par number of turns, and be
+finished by following the hints alone.
 """
 import json
 import os
@@ -47,9 +48,20 @@ class Static(unittest.TestCase):
 
     def test_levels_table(self):
         sizes = json.loads(re.search(r"SIZES=(\[[\d,]+\])", LOGIC).group(1))
+        scramble = json.loads(re.search(r"SCRAMBLE=(\[[\d,]+\])", LOGIC).group(1))
         levels = int(re.search(r"LEVELS=(\d+)", LOGIC).group(1))
         self.assertEqual(len(sizes), levels)
         self.assertEqual(sizes, sorted(sizes))
+        self.assertEqual(len(scramble), levels)
+        # the first island is a gentle tutorial
+        self.assertGreater(scramble[0], 0)
+        self.assertLessEqual(scramble[0], 3)
+
+    def test_tutorial_and_hint(self):
+        self.assertIn("function hintTile", LOGIC)
+        self.assertIn('["hint","💡 Hint"]', MODULE)
+        self.assertIn('$("b-hint")', MODULE)
+        self.assertIn('id="b-hint"', HTML)
 
     def test_disclosure_and_wording(self):
         self.assertIn("Made by MV2 of Munim, Inc. with AI agents", HTML)
