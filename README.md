@@ -12,7 +12,17 @@ Turn the channel tiles so the rain reaches every garden, and watch the flowers b
   the island). Wet channels stand taller as well as turning blue, so the water's path does not depend on colour alone.
 - **Runs in the browser:** a single `index.html` (WebXR + three.js from a pinned CDN version). With no headset, click the tiles.
 
-Status: **prototype v0.2**. Not yet tested on a headset.
+Status: **prototype v0.2.1**. Played on desktop (level 1 solved at par, Next works); not yet tested on a headset.
+
+## What's new in v0.2.1
+Fixes from the first desktop playtest:
+- `?emulate` now starts Meta's emulator in desktop Chrome. Chrome always has its own `navigator.xr`, which reports no
+  headset, so the emulator has to be forced in (`installRuntime({forceInstall: true})`); before, the button stayed "VR NOT SUPPORTED".
+- Sound starts only after a click, pinch or touch. The self-test used to start audio itself, which made Chrome log
+  hundreds of "AudioContext was not allowed to start" warnings. The self-test now also checks this.
+- The stars on the panel are drawn apart from the headline, so the third star is no longer cut off.
+- The panel sits higher and the cloud lower, so the cloud no longer covers the panel text.
+- The frame timer no longer uses the deprecated `THREE.Clock`.
 
 ## What's new in v0.2
 - A tutorial arrow on island 1, and a 💡 Hint button (3D and on screen).
@@ -31,7 +41,7 @@ Status: **prototype v0.2**. Not yet tested on a headset.
 ## Credits and disclosure
 Made by MV2 of Munim, Inc. with AI agents (Anthropic Claude): the code, levels and sounds were generated with AI tools,
 then reviewed and tested. No third-party art or sound assets are used; everything is drawn and synthesized at runtime.
-Built on [three.js](https://threejs.org) (MIT).
+Built on [three.js](https://threejs.org) (MIT) and, for `?emulate` only, Meta's Immersive Web Emulator.
 
 Contact: munimversion2@gmail.com
 

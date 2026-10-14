@@ -28,6 +28,17 @@ HARNESS = """
 """
 
 
+def function_body(name):
+    """The source of `function name(...){...}` in the module script, matched by braces."""
+    start = MODULE.index("function " + name + "(")
+    depth, i = 0, MODULE.index("{", start)
+    while True:
+        depth += {"{": 1, "}": -1}.get(MODULE[i], 0)
+        if depth == 0:
+            return MODULE[start:i + 1]
+        i += 1
+
+
 class Static(unittest.TestCase):
     def test_versions_are_pinned(self):
         imports = json.loads(re.search(r'<script type="importmap">(.*?)</script>', HTML, re.S).group(1))["imports"]
@@ -66,6 +77,35 @@ class Static(unittest.TestCase):
     def test_disclosure_and_wording(self):
         self.assertIn("Made by MV2 of Munim, Inc. with AI agents", HTML)
         self.assertIsNone(re.search(r"MV2[^.]{0,60}\b(an AI|a bot|AI assistant)\b", HTML))
+
+    # v0.2.1: fixes from the first desktop playtest
+
+    def test_emulator_is_forced_in(self):
+        # Chrome's own navigator.xr makes IWER skip installing itself unless forced
+        self.assertRegex(MODULE, r"\.installRuntime\(\{\s*forceInstall:\s*true\s*\}\)")
+        self.assertNotRegex(MODULE, r"\.installRuntime\(\)")
+
+    def test_audio_starts_only_from_a_gesture(self):
+        # activate() is also called by the self-test, so it must not start audio
+        self.assertNotIn("sound.unlock", function_body("activate"))
+        self.assertIn("sound.unlock", function_body("poke"))
+        self.assertRegex(MODULE, r'addEventListener\("pointerdown",[^\n]*sound\.unlock\(\)')
+        self.assertRegex(MODULE, r'addEventListener\("select",[^\n]*sound\.unlock\(\)')
+        self.assertIn("sound.started()", MODULE)
+
+    def test_no_deprecated_clock(self):
+        self.assertIsNone(re.search(r"\bTHREE\.Clock\b", MODULE))
+
+    def test_panel_clears_the_cloud(self):
+        cloud_y = float(re.search(r"CLOUD_Y=([\d.]+)", MODULE).group(1))
+        panel_y = float(re.search(r"PANEL_Y=([\d.]+)", MODULE).group(1))
+        self.assertGreater(panel_y, cloud_y + 0.05)
+        self.assertRegex(MODULE, r"panelMesh\.position\.set\(0,PANEL_Y,")
+
+    def test_stars_drawn_apart_from_the_headline(self):
+        body = function_body("drawPanel")
+        self.assertIn('g.textAlign="right"', body)
+        self.assertIn("fillText(s,", body)
 
 
 @unittest.skipUnless(shutil.which("node"), "Node.js is not installed")

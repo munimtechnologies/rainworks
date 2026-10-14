@@ -23,7 +23,7 @@ canvas{display:block}
   <p id="status">Loading…</p>
   <p><button id="b-back">◀ Back</button><button id="b-restart">↺ Restart</button><button id="b-hint">💡 Hint</button><button id="b-next">Next ▶</button><button id="b-sound">🔊 Sound on</button></p>
   <p class="dim">Turn the channel tiles so the rain from the cloud reaches every garden. In VR: pinch at a tile, or touch it with a fingertip. Here: click a tile. No timer and no fail state; 💡 Hint points at a tile to turn.</p>
-  <p class="dim">Made by MV2 of Munim, Inc. with AI agents (code, levels and sound). Prototype v0.2.</p>
+  <p class="dim">Made by MV2 of Munim, Inc. with AI agents (code, levels and sound). Prototype v0.2.1.</p>
 </div>
 <div id="test" hidden></div>
 
@@ -152,11 +152,12 @@ import * as THREE from "three";
 import {VRButton} from "three/addons/webxr/VRButton.js";
 import {XRHandModelFactory} from "three/addons/webxr/XRHandModelFactory.js";
 
-// ?emulate: load Meta's Immersive Web Emulator, so hand input can be tested in desktop Chrome
+// ?emulate: load Meta's Immersive Web Emulator, so hand input can be tested in desktop Chrome.
+// Chrome always has its own navigator.xr (which reports no headset), so the emulator must be forced in.
 if(new URLSearchParams(location.search).has("emulate")){
   try{
     const {XRDevice,metaQuest3}=await import("https://esm.sh/iwer@2.6.0");
-    const dev=new XRDevice(metaQuest3);dev.installRuntime();dev.primaryInputMode="hand";
+    const dev=new XRDevice(metaQuest3);dev.installRuntime({forceInstall:true});dev.primaryInputMode="hand";
     window.xrDevice=dev;
     try{const {DevUI}=await import("https://esm.sh/@iwer/devui@2.6.0");new DevUI(dev);}catch(e){console.warn("Rainworks: the emulator's DevUI did not load",e);}
   }catch(e){console.error("Rainworks: the emulator did not load",e);}
@@ -164,6 +165,7 @@ if(new URLSearchParams(location.search).has("emulate")){
 
 const T=0.07;                                  // tile size in metres
 const BOARD=new THREE.Vector3(0,-0.32,-0.5);   // board centre, relative to the head when the session starts (seated)
+const CLOUD_Y=0.13,PANEL_Y=0.2;                // the panel sits above the cloud's line of sight, so the cloud never hides its text
 const $=id=>document.getElementById(id);
 
 // ---------- scene ----------
@@ -196,9 +198,9 @@ const ARM={1:[0,-1],2:[1,0],4:[0,1],8:[-1,0]};
 
 // the cloud and its rain sit above the source tile
 const cloud=new THREE.Group();
-[[0,0,0,.032],[.03,-.004,.008,.024],[-.03,-.004,-.006,.026],[.012,.012,-.01,.022],[-.014,.01,.012,.02]].forEach(([x,y,z,r])=>{const s=new THREE.Mesh(new THREE.SphereGeometry(r,14,10),MAT.cloud);s.position.set(x,y+.16,z);cloud.add(s);});
-const RN=90,rainPos=new Float32Array(RN*3);
-for(let i=0;i<RN;i++){rainPos[i*3]=(Math.random()-.5)*.06;rainPos[i*3+1]=.01+Math.random()*.13;rainPos[i*3+2]=(Math.random()-.5)*.06;}
+[[0,0,0,.032],[.03,-.004,.008,.024],[-.03,-.004,-.006,.026],[.012,.012,-.01,.022],[-.014,.01,.012,.02]].forEach(([x,y,z,r])=>{const s=new THREE.Mesh(new THREE.SphereGeometry(r,14,10),MAT.cloud);s.position.set(x,y+CLOUD_Y,z);cloud.add(s);});
+const RN=90,RAIN_TOP=CLOUD_Y-0.02,rainPos=new Float32Array(RN*3);
+for(let i=0;i<RN;i++){rainPos[i*3]=(Math.random()-.5)*.06;rainPos[i*3+1]=.01+Math.random()*(RAIN_TOP-.01);rainPos[i*3+2]=(Math.random()-.5)*.06;}
 const rainGeo=new THREE.BufferGeometry();rainGeo.setAttribute("position",new THREE.BufferAttribute(rainPos,3));
 const rain=new THREE.Points(rainGeo,new THREE.PointsMaterial({color:0x5fb0ff,size:0.004}));cloud.add(rain);
 
@@ -254,8 +256,8 @@ function buildLevel(n){
     if(c.kind==="source")root.add(cloud);
     tiles.push(t);
   });
-  // panel behind the board, buttons along the near edge, rainbow behind the panel
-  panelMesh.position.set(0,0.07,-(L.h*T)/2-0.03);
+  // panel behind the board and above the cloud, buttons along the near edge, rainbow behind the panel
+  panelMesh.position.set(0,PANEL_Y,-(L.h*T)/2-0.05);
   buttons.forEach(b=>{b.position.y=0.002;b.position.z=(L.h*T)/2+0.045;});
   rainbow.position.set(0,-0.02,-(L.h*T)/2-0.1);
   refresh(false);
@@ -288,25 +290,27 @@ function refresh(withSound){
   drawPanel();
 }
 function starTotal(){let s=0;try{for(let n=1;n<=LEVELS;n++)s+=+(localStorage.getItem("rainworks.stars."+n)||0);}catch(e){}return s;}
+// [headline, second line, stars]; the stars are drawn on their own, so a long headline can never push them off the panel
 function statusText(){
   const g=gardens(L),w=g.filter(i=>wet.has(i)).length;
-  if(L.done)return [`Level ${L.n}: every garden blooms! ${"★".repeat(stars(L))}${"☆".repeat(3-stars(L))}`,
-    L.n<LEVELS?`Stars ${starTotal()} of ${LEVELS*3}. Press Next ▶ for the next island.`:`All ${LEVELS} islands bloom, stars ${starTotal()} of ${LEVELS*3}. Thank you for playing!`];
-  if(L.n===1&&hintAt>=0)return [`Level 1: turn the tile under the arrow`,`Pinch it, or touch it with a fingertip · Gardens ${w}/${g.length}`];
-  return [`Level ${L.n} of ${LEVELS}`,`Turns ${L.moves} (par ${L.par}) · Gardens ${w}/${g.length}`];
+  if(L.done)return [`Level ${L.n}: every garden blooms!`,
+    L.n<LEVELS?`Stars ${starTotal()} of ${LEVELS*3}. Press Next ▶ for the next island.`:`All ${LEVELS} islands bloom, stars ${starTotal()} of ${LEVELS*3}. Thank you for playing!`,
+    "★".repeat(stars(L))+"☆".repeat(3-stars(L))];
+  if(L.n===1&&hintAt>=0)return [`Level 1: turn the tile under the arrow`,`Pinch it, or touch it with a fingertip · Gardens ${w}/${g.length}`,""];
+  return [`Level ${L.n} of ${LEVELS}`,`Turns ${L.moves} (par ${L.par}) · Gardens ${w}/${g.length}`,""];
 }
 function drawPanel(){
-  const g=panel.ctx,[a,b]=statusText();
+  const g=panel.ctx,[a,b,s]=statusText();
   g.clearRect(0,0,768,224);g.fillStyle="rgba(20,32,46,.88)";g.fillRect(0,0,768,224);
   g.textAlign="left";g.textBaseline="alphabetic";
-  g.fillStyle="#eef3f8";fitFont(g,a,46,"bold ",712);g.fillText(a,28,80);
+  g.fillStyle="#eef3f8";fitFont(g,a,46,"bold ",s?540:712);g.fillText(a,28,80);
+  if(s){g.textAlign="right";g.fillStyle="#ffd23f";g.font="bold 46px system-ui,sans-serif";g.fillText(s,740,80);g.textAlign="left";}
   g.fillStyle="#9fd3ff";fitFont(g,b,34,"",712);g.fillText(b,28,150);
   panel.tex.needsUpdate=true;
-  $("status").textContent=a+". "+b;
+  $("status").textContent=a+(s?" "+s:"")+". "+b;
 }
 function activate(o){
   if(!o)return;
-  sound.unlock();
   const act=o.userData.action;
   if(act==="next"){if(L.n<LEVELS){buildLevel(L.n+1);sound.click();}return;}
   if(act==="back"){if(L.n>1){buildLevel(L.n-1);sound.click();}return;}
@@ -316,10 +320,12 @@ function activate(o){
   if(i==null||L.done)return;
   if(tap(L,i)){tiles[i].spin=Math.PI/2;sound.click();refresh(true);}
 }
-$("b-next").onclick=()=>activate(button("next"));
-$("b-back").onclick=()=>activate(button("back"));
-$("b-restart").onclick=()=>activate(button("restart"));
-$("b-hint").onclick=()=>activate(button("hint"));
+// audio starts only from a real gesture (a click, a pinch or a touch), never from code such as the self-test
+const byPlayer=action=>()=>{sound.unlock();activate(button(action));};
+$("b-next").onclick=byPlayer("next");
+$("b-back").onclick=byPlayer("back");
+$("b-restart").onclick=byPlayer("restart");
+$("b-hint").onclick=byPlayer("hint");
 $("b-sound").onclick=()=>{sound.unlock();const on=sound.toggle();$("b-sound").textContent=on?"🔊 Sound on":"🔇 Sound off";};
 
 // ---------- sound: synthesized, no files ----------
@@ -337,7 +343,8 @@ const sound=(()=>{
   }
   function setRain(){if(rainGain)rainGain.gain.setTargetAtTime(raining?0.025:0.004,ac.currentTime,0.8);}
   return{
-    unlock(){try{if(!ac){ac=new (window.AudioContext||window.webkitAudioContext)();master=ac.createGain();master.connect(ac.destination);startRain();setRain();}if(ac.state==="suspended"&&!document.hidden)ac.resume();}catch(e){}},
+    unlock(){try{if(!ac){ac=new (window.AudioContext||window.webkitAudioContext)();master=ac.createGain();master.gain.value=on?1:0;master.connect(ac.destination);startRain();setRain();}if(ac.state==="suspended"&&!document.hidden)ac.resume();}catch(e){}},
+    started(){return !!ac;},
     rain(r){raining=r;setRain();},
     toggle(){on=!on;if(master)master.gain.value=on?1:0;return on;},
     pause(hidden){if(!ac)return;try{hidden?ac.suspend():ac.resume();}catch(e){}},
@@ -353,7 +360,7 @@ const raycaster=new THREE.Raycaster(),ndc=new THREE.Vector2();
 let mouseHover=null;
 function pick(){const hit=raycaster.intersectObjects(tappables(),false)[0];return hit?hit.object:null;}
 renderer.domElement.addEventListener("pointermove",e=>{ndc.set(e.clientX/innerWidth*2-1,-(e.clientY/innerHeight)*2+1);raycaster.setFromCamera(ndc,camera);mouseHover=pick();});
-renderer.domElement.addEventListener("pointerdown",e=>{if(renderer.xr.isPresenting)return;ndc.set(e.clientX/innerWidth*2-1,-(e.clientY/innerHeight)*2+1);raycaster.setFromCamera(ndc,camera);activate(pick());});
+renderer.domElement.addEventListener("pointerdown",e=>{if(renderer.xr.isPresenting)return;sound.unlock();ndc.set(e.clientX/innerWidth*2-1,-(e.clientY/innerHeight)*2+1);raycaster.setFromCamera(ndc,camera);activate(pick());});
 
 // ---------- input: XR hands (pinch at a tile, or touch it) and controllers ----------
 const handFactory=new XRHandModelFactory(),hands=[],rays=[],tmpM=new THREE.Matrix4(),tmpV=new THREE.Vector3();
@@ -363,7 +370,7 @@ for(let k=0;k<2;k++){
   line.scale.z=0.7;line.visible=false;ctl.add(line);
   ctl.addEventListener("connected",()=>{line.visible=true;});
   ctl.addEventListener("disconnected",()=>{line.visible=false;});
-  ctl.addEventListener("select",()=>activate(aim(ctl)));
+  ctl.addEventListener("select",()=>{sound.unlock();activate(aim(ctl));});
   rays.push(ctl);
   const hand=renderer.xr.getHand(k);hand.add(handFactory.createHandModel(hand,"spheres"));scene.add(hand);
   hands.push({hand,last:null,at:0});
@@ -386,14 +393,14 @@ function poke(h,now){
   if(!tip||!tip.visible){h.last=null;return;}
   tip.getWorldPosition(tmpV);
   const o=touched(tmpV);
-  if(o&&o!==h.last&&now-h.at>250){h.at=now;activate(o);}
+  if(o&&o!==h.last&&now-h.at>250){h.at=now;sound.unlock();activate(o);}
   h.last=o;
 }
 
 // ---------- frame loop ----------
-const clock=new THREE.Clock();
+let lastFrame=performance.now();
 renderer.setAnimationLoop(()=>{
-  const dt=Math.min(clock.getDelta(),0.05),now=performance.now();
+  const now=performance.now(),dt=Math.min((now-lastFrame)/1000,0.05);lastFrame=now;
   for(const t of tiles){
     if(t.spin>0){t.spin=Math.max(0,t.spin-dt*Math.PI*4);t.arms.rotation.y=t.spin;}
     if(t.flower){
@@ -403,7 +410,7 @@ renderer.setAnimationLoop(()=>{
     }
   }
   rain.visible=!L.done;
-  for(let i=0;i<RN;i++){rainPos[i*3+1]-=dt*0.25;if(rainPos[i*3+1]<0.01)rainPos[i*3+1]=0.14;}
+  for(let i=0;i<RN;i++){rainPos[i*3+1]-=dt*0.25;if(rainPos[i*3+1]<0.01)rainPos[i*3+1]=RAIN_TOP;}
   rainGeo.attributes.position.needsUpdate=true;
   rainbowT=L.done?Math.min(1,rainbowT+dt*0.7):0;
   rainbow.visible=rainbowT>0;
@@ -437,11 +444,14 @@ if(location.hash==="#selftest"){
       if(hintAt!==-1)problems.push(`level ${n}: the hint arrow stays after the solve`);
       if(tiles.length!==L.w*L.h)problems.push(`level ${n}: ${tiles.length} tiles drawn`);
       if(/NaN|undefined/.test(statusText().join(" ")))problems.push(`level ${n}: bad panel text "${statusText().join(" ")}"`);
+      if(statusText()[2].length!==3)problems.push(`level ${n}: the solved panel shows "${statusText()[2]}" instead of three star marks`);
+      if(panelMesh.position.y<=CLOUD_Y+0.05)problems.push(`level ${n}: the panel is low enough for the cloud to cover it`);
     }catch(err){problems.push(`level ${n} (3D): ${err&&err.stack||err}`);}
   }
+  if(sound.started())problems.push("audio started without a click or pinch (the browser warns about this)");
   try{localStorage.removeItem("rainworks.level");for(let n=1;n<=LEVELS;n++)localStorage.removeItem("rainworks.stars."+n);}catch(e){}
   const box=$("test");box.hidden=false;
-  box.textContent=`Rainworks self-test (v0.2): ${LEVELS} levels checked in ${Math.round(performance.now()-t0)} ms.\n`+(problems.length?`${problems.length} problem(s):\n`+problems.join("\n"):"No problems found.")+"\n\nClick anywhere on this panel to close it.";
+  box.textContent=`Rainworks self-test (v0.2.1): ${LEVELS} levels checked in ${Math.round(performance.now()-t0)} ms.\n`+(problems.length?`${problems.length} problem(s):\n`+problems.join("\n"):"No problems found.")+"\n\nClick anywhere on this panel to close it.";
   box.onclick=()=>{box.hidden=true;location.hash="";};
   console.log("Rainworks self-test:",problems.length,"problems",problems);
   startLevel=1;
