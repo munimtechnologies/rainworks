@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rainworks: route the rain with your hands</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#9fc4e0;font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#eef3f8}
+canvas{display:block}
+#hud{position:absolute;top:10px;left:10px;max-width:360px;background:#14202ed9;border-radius:12px;padding:10px 14px;z-index:2}
+#hud h1{font-size:1.3rem;margin:0 0 4px}
+#hud p{margin:4px 0}
+#hud .dim{color:#9fb3c8;font-size:.82rem}
+#hud button{font:inherit;color:#eef3f8;background:#24384f;border:1px solid #3a5573;border-radius:8px;padding:.3em .8em;cursor:pointer;margin:4px 4px 0 0}
+#hud button:hover{border-color:#59b8ff}
+#test{position:absolute;inset:40px;overflow:auto;background:#14202ef2;border-radius:12px;padding:16px;z-index:3;white-space:pre-wrap;font:13px/1.4 ui-monospace,Consolas,monospace}
+</style>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.186.1/build/three.module.js","three/addons/":"https://unpkg.com/three@0.186.1/examples/jsm/"}}</script>
+</head>
+<body>
+<div id="hud">
+  <h1>🌧️ Rainworks</h1>
+  <p id="status">Loading…</p>
+  <p><button id="b-back">◀ Back</button><button id="b-restart">↺ Restart</button><button id="b-next">Next ▶</button></p>
+  <p class="dim">Turn the channel tiles so the rain from the cloud reaches every garden. In VR: pinch at a tile, or touch it with a fingertip. Here: click a tile.</p>
+  <p class="dim">Made by MV2 of Munim, Inc. with AI agents (code, levels and sound). Prototype v0.1.</p>
+</div>
+<div id="test" hidden></div>
+
+<script id="logic">
+"use strict";
+// Rainworks puzzle logic: no DOM and no three.js, so test_rainworks.py can run it under Node.
+// A level is a grid of channel tiles. Openings are bit masks: N=1, E=2, S=4, W=8. One pinch turns a
+// tile 90° clockwise. Levels are generated from a seeded random spanning tree, so every level is solvable.
+const N=1,E=2,S=4,W=8,LEVELS=12,SIZES=[3,3,4,4,4,5,5,5,5,6,6,6];
+const DIRS=[{b:N,dx:0,dy:-1,o:S},{b:E,dx:1,dy:0,o:W},{b:S,dx:0,dy:1,o:N},{b:W,dx:-1,dy:0,o:E}];
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+const rot=(m,k)=>{k=((k%4)+4)%4;return ((m<<k)|(m>>(4-k)))&15;};
+const bits=m=>(m&1)+(m>>1&1)+(m>>2&1)+(m>>3&1);
+
+function genLevel(n){
+  const size=SIZES[clampLevel(n)-1],w=size,h=size,r=mulberry32(n*7919+17);
+  const cells=Array.from({length:w*h},()=>({kind:"pipe",sol:0,mask:0}));
+  const src=Math.floor(r()*w*h),seen=new Array(w*h).fill(false),stack=[src];
+  seen[src]=true;
+  // depth-first spanning tree: long winding channels, few dead ends
+  while(stack.length){
+    const i=stack[stack.length-1],x=i%w,y=(i/w)|0;
+    const opts=DIRS.filter(d=>{const nx=x+d.dx,ny=y+d.dy;return nx>=0&&ny>=0&&nx<w&&ny<h&&!seen[ny*w+nx];});
+    if(!opts.length){stack.pop();continue;}
+    const d=opts[Math.floor(r()*opts.length)],j=(y+d.dy)*w+x+d.dx;
+    cells[i].sol|=d.b;cells[j].sol|=d.o;seen[j]=true;stack.push(j);
+  }
+  cells.forEach((c,i)=>{
+    c.kind=i===src?"source":bits(c.sol)===1?"garden":"pipe";
+    c.mask=c.kind==="source"?c.sol:rot(c.sol,Math.floor(r()*4));
+  });
+  const L={n,w,h,cells,src,moves:0,done:false};
+  for(let guard=0;isSolved(L)&&guard<200;guard++){
+    const c=cells[Math.floor(r()*cells.length)];
+    if(c.kind!=="source"&&rot(c.mask,1)!==c.mask)c.mask=rot(c.mask,1);
+  }
+  // par: the fewest clockwise turns that put every tile back the way it was generated
+  L.par=cells.reduce((a,c)=>{if(c.kind==="source")return a;for(let k=0;k<4;k++)if(rot(c.mask,k)===c.sol)return a+k;return a;},0);
+  return L;
+}
+function clampLevel(n){return Math.max(1,Math.min(LEVELS,n|0));}
+// every tile the water reaches: openings must face each other
+function flow(L){
+  const wet=new Set([L.src]),q=[L.src];
+  while(q.length){
+    const i=q.shift(),x=i%L.w,y=(i/L.w)|0,m=L.cells[i].mask;
+    for(const d of DIRS){
+      if(!(m&d.b))continue;
+      const nx=x+d.dx,ny=y+d.dy;if(nx<0||ny<0||nx>=L.w||ny>=L.h)continue;
+      const j=ny*L.w+nx;if(!wet.has(j)&&(L.cells[j].mask&d.o)){wet.add(j);q.push(j);}
+    }
+  }
+  return wet;
+}
+const gardens=L=>L.cells.map((c,i)=>i).filter(i=>L.cells[i].kind==="garden");
+function isSolved(L,wet){wet=wet||flow(L);return gardens(L).every(i=>wet.has(i));}
+function tap(L,i){const c=L.cells[i];if(!c||c.kind==="source")return false;c.mask=rot(c.mask,1);L.moves++;return true;}
+function stars(L){return L.moves<=L.par?3:L.moves<=L.par*1.5+2?2:1;}
+
+function selfTestLogic(){
+  const problems=[];
+  for(let n=1;n<=LEVELS;n++){
+    const where="level "+n;
+    try{
+      const L=genLevel(n);
+      if(JSON.stringify(L)!==JSON.stringify(genLevel(n)))problems.push(where+": not the same level twice");
+      if(L.cells.length!==L.w*L.h)problems.push(where+": wrong number of tiles");
+      const edges=L.cells.reduce((a,c)=>a+bits(c.sol),0)/2;
+      if(edges!==L.w*L.h-1)problems.push(where+": the solution is not a spanning tree ("+edges+" links)");
+      if(!gardens(L).length)problems.push(where+": no gardens");
+      if(isSolved(L))problems.push(where+": starts solved");
+      if(!(L.par>0))problems.push(where+": par is "+L.par);
+      L.cells.forEach((c,i)=>{
+        if(c.mask<1||c.mask>15||bits(c.mask)!==bits(c.sol))problems.push(where+": bad tile "+i);
+        const x=i%L.w,y=(i/L.w)|0;
+        for(const d of DIRS)if((c.sol&d.b)&&(x+d.dx<0||y+d.dy<0||x+d.dx>=L.w||y+d.dy>=L.h))problems.push(where+": tile "+i+" opens off the board");
+      });
+      // play the stored solution with taps only, as a player would
+      let taps=0;
+      L.cells.forEach((c,i)=>{for(let k=0;c.mask!==c.sol&&k<4;k++){tap(L,i);taps++;}if(c.mask!==c.sol)problems.push(where+": tile "+i+" cannot reach its solution");});
+      if(taps!==L.par)problems.push(where+": solved in "+taps+" turns, but par is "+L.par);
+      const wet=flow(L);
+      if(wet.size!==L.cells.length)problems.push(where+": the solution waters "+wet.size+" of "+L.cells.length+" tiles");
+      if(!isSolved(L,wet))problems.push(where+": the solution leaves a garden dry");
+      if(stars(L)!==3)problems.push(where+": a par solve earns "+stars(L)+" stars");
+      if(tap(L,L.src))problems.push(where+": the source can be turned");
+    }catch(err){problems.push(where+": "+(err&&err.stack||err));}
+  }
+  return problems;
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import {VRButton} from "three/addons/webxr/VRButton.js";
+import {XRHandModelFactory} from "three/addons/webxr/XRHandModelFactory.js";
+
+// ?emulate: load Meta's Immersive Web Emulator, so hand input can be tested in desktop Chrome
+if(new URLSearchParams(location.search).has("emulate")){
+  try{
+    const {XRDevice,metaQuest3}=await import("https://esm.sh/iwer@2.6.0");
+    const dev=new XRDevice(metaQuest3);dev.installRuntime();dev.primaryInputMode="hand";
+    window.xrDevice=dev;
+    try{const {DevUI}=await import("https://esm.sh/@iwer/devui@2.6.0");new DevUI(dev);}catch(e){console.warn("Rainworks: the emulator's DevUI did not load",e);}
+  }catch(e){console.error("Rainworks: the emulator did not load",e);}
+}
+
+const T=0.07;                                  // tile size in metres
+const BOARD=new THREE.Vector3(0,-0.32,-0.5);   // board centre, relative to the head when the session starts (seated)
+const $=id=>document.getElementById(id);
+
+// ---------- scene ----------
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x9fc4e0);
+const camera=new THREE.PerspectiveCamera(60,innerWidth/innerHeight,0.01,50);
+camera.position.set(0,0.1,0.12);camera.lookAt(BOARD);
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);
+renderer.xr.enabled=true;renderer.xr.setReferenceSpaceType("local");
+document.body.append(renderer.domElement);
+document.body.append(VRButton.createButton(renderer,{optionalFeatures:["hand-tracking"]}));
+scene.add(new THREE.HemisphereLight(0xffffff,0x557755,2.2));
+const sun=new THREE.DirectionalLight(0xffffff,1.6);sun.position.set(0.5,1,0.3);scene.add(sun);
+
+const board=new THREE.Group();board.position.copy(BOARD);scene.add(board);
+const island=new THREE.Mesh(new THREE.CylinderGeometry(0.36,0.2,0.08,40),new THREE.MeshStandardMaterial({color:0x6b8f4e,roughness:1}));
+island.position.y=-0.046;board.add(island);
+
+const std=(color,o)=>new THREE.MeshStandardMaterial({color,roughness:.8,...o});
+const MAT={base:std(0xd8c49a),hover:std(0xf3e2b8,{emissive:0x332200}),srcBase:std(0x7cc4f0),dry:std(0x8a8f96),
+  wet:std(0x3aa0ff,{emissive:0x0a3a66,roughness:.3}),pot:std(0xb5653a),stem:std(0x3f8f3a),bud:std(0x6fbf5a),bloom:std(0xff7fb8,{emissive:0x401028}),
+  cloud:std(0xffffff,{roughness:1}),button:std(0x24384f),buttonHover:std(0x2f5c8a)};
+const baseGeo=new THREE.BoxGeometry(T*0.94,T*0.08,T*0.94);
+const armGeoNS=new THREE.BoxGeometry(T*0.22,T*0.12,T*0.5),armGeoEW=new THREE.BoxGeometry(T*0.5,T*0.12,T*0.22);
+const hubGeo=new THREE.CylinderGeometry(T*0.16,T*0.16,T*0.13,16);
+const potGeo=new THREE.CylinderGeometry(T*0.26,T*0.19,T*0.24,16),stemGeo=new THREE.CylinderGeometry(0.0015,0.0015,0.03,6),bloomGeo=new THREE.SphereGeometry(0.012,12,8);
+const ARM={1:[0,-1],2:[1,0],4:[0,1],8:[-1,0]};
+
+// the cloud and its rain sit above the source tile
+const cloud=new THREE.Group();
+[[0,0,0,.032],[.03,-.004,.008,.024],[-.03,-.004,-.006,.026],[.012,.012,-.01,.022],[-.014,.01,.012,.02]].forEach(([x,y,z,r])=>{const s=new THREE.Mesh(new THREE.SphereGeometry(r,14,10),MAT.cloud);s.position.set(x,y+.16,z);cloud.add(s);});
+const RN=90,rainPos=new Float32Array(RN*3);
+for(let i=0;i<RN;i++){rainPos[i*3]=(Math.random()-.5)*.06;rainPos[i*3+1]=.01+Math.random()*.13;rainPos[i*3+2]=(Math.random()-.5)*.06;}
+const rainGeo=new THREE.BufferGeometry();rainGeo.setAttribute("position",new THREE.BufferAttribute(rainPos,3));
+cloud.add(new THREE.Points(rainGeo,new THREE.PointsMaterial({color:0x5fb0ff,size:0.004})));
+
+// ---------- 3D panel and buttons (usable by pinch or touch) ----------
+function labelTexture(w,h){const cv=document.createElement("canvas");cv.width=w;cv.height=h;const tex=new THREE.CanvasTexture(cv);tex.colorSpace=THREE.SRGBColorSpace;return {cv,ctx:cv.getContext("2d"),tex};}
+const panel=labelTexture(768,224);
+const panelMesh=new THREE.Mesh(new THREE.PlaneGeometry(0.33,0.33*224/768),new THREE.MeshBasicMaterial({map:panel.tex,transparent:true}));
+panelMesh.rotation.x=-0.35;board.add(panelMesh);
+const buttons=[["back","◀ Back"],["restart","↺ Restart"],["next","Next ▶"]].map(([action,text],k)=>{
+  const lab=labelTexture(256,112),g=lab.ctx;
+  g.fillStyle="#24384f";g.fillRect(0,0,256,112);g.fillStyle="#eef3f8";g.font="bold 44px system-ui,sans-serif";g.textAlign="center";g.textBaseline="middle";g.fillText(text,128,58);lab.tex.needsUpdate=true;
+  const b=new THREE.Mesh(new THREE.BoxGeometry(0.085,0.012,0.037),MAT.button);b.userData.action=action;
+  const top=new THREE.Mesh(new THREE.PlaneGeometry(0.08,0.035),new THREE.MeshBasicMaterial({map:lab.tex}));top.rotation.x=-Math.PI/2;top.position.y=0.0065;b.add(top);
+  b.position.x=(k-1)*0.1;board.add(b);return b;
+});
+
+// ---------- level state ----------
+let L=null,tiles=[],wet=new Set();
+const tappables=()=>tiles.map(t=>t.base).concat(buttons);
+function buildLevel(n){
+  for(const t of tiles)board.remove(t.root);
+  tiles=[];L=genLevel(clampLevel(n));
+  try{localStorage.setItem("rainworks.level",String(L.n));}catch(e){}
+  L.cells.forEach((c,i)=>{
+    const x=i%L.w,y=(i/L.w)|0,root=new THREE.Group();
+    root.position.set((x-(L.w-1)/2)*T,0,(y-(L.h-1)/2)*T);board.add(root);
+    const base=new THREE.Mesh(baseGeo,c.kind==="source"?MAT.srcBase:MAT.base);base.userData.tile=i;root.add(base);
+    const arms=new THREE.Group();root.add(arms);
+    const t={i,root,base,arms,spin:0,flower:null,grow:0.35};
+    if(c.kind==="garden"){
+      const pot=new THREE.Mesh(potGeo,MAT.pot);pot.position.y=T*0.16;root.add(pot);
+      const flower=new THREE.Group(),stem=new THREE.Mesh(stemGeo,MAT.stem),head=new THREE.Mesh(bloomGeo,MAT.bud);
+      stem.position.y=0.015;head.position.y=0.032;flower.add(stem,head);flower.position.y=T*0.28;flower.scale.setScalar(0.35);root.add(flower);
+      t.flower=flower;t.head=head;
+    }
+    if(c.kind==="source")root.add(cloud);
+    tiles.push(t);
+  });
+  // panel behind the board, buttons along the near edge
+  panelMesh.position.set(0,0.07,-(L.h*T)/2-0.03);
+  buttons.forEach(b=>{b.position.y=0.002;b.position.z=(L.h*T)/2+0.045;});
+  refresh(false);
+}
+function drawTile(t){
+  t.arms.clear();
+  const c=L.cells[t.i],mat=wet.has(t.i)?MAT.wet:MAT.dry;
+  for(const b of [1,2,4,8])if(c.mask&b){const [dx,dz]=ARM[b],a=new THREE.Mesh(dx?armGeoEW:armGeoNS,mat);a.position.set(dx*T*0.25,T*0.1,dz*T*0.25);t.arms.add(a);}
+  if(c.kind!=="garden"){const hub=new THREE.Mesh(hubGeo,c.kind==="source"?MAT.wet:mat);hub.position.y=T*0.1;t.arms.add(hub);}
+  if(t.head)t.head.material=wet.has(t.i)?MAT.bloom:MAT.bud;
+}
+function refresh(withSound){
+  const before=wet.size;wet=flow(L);
+  tiles.forEach(drawTile);
+  if(withSound&&wet.size>before)sound.water();
+  if(!L.done&&isSolved(L,wet)){
+    L.done=true;
+    try{const k="rainworks.stars."+L.n,best=+(localStorage.getItem(k)||0);if(stars(L)>best)localStorage.setItem(k,String(stars(L)));}catch(e){}
+    if(withSound)sound.chime();
+  }
+  drawPanel();
+}
+function statusText(){
+  const g=gardens(L),w=g.filter(i=>wet.has(i)).length;
+  if(L.done)return [`Level ${L.n}: every garden blooms! ${"★".repeat(stars(L))}${"☆".repeat(3-stars(L))}`,L.n<LEVELS?"Press Next ▶ for the next island.":"All 12 islands are blooming. Thank you for playing!"];
+  return [`Level ${L.n} of ${LEVELS}`,`Turns ${L.moves} (par ${L.par}) · Gardens ${w}/${g.length}`];
+}
+function drawPanel(){
+  const g=panel.ctx,[a,b]=statusText();
+  g.clearRect(0,0,768,224);g.fillStyle="rgba(20,32,46,.88)";g.fillRect(0,0,768,224);
+  g.fillStyle="#eef3f8";g.font="bold 46px system-ui,sans-serif";g.fillText(a,28,80);
+  g.fillStyle="#9fd3ff";g.font="34px system-ui,sans-serif";g.fillText(b,28,150);
+  panel.tex.needsUpdate=true;
+  $("status").textContent=a+". "+b;
+}
+function activate(o){
+  if(!o)return;
+  sound.unlock();
+  const act=o.userData.action;
+  if(act==="next"){if(L.n<LEVELS){buildLevel(L.n+1);sound.click();}return;}
+  if(act==="back"){if(L.n>1){buildLevel(L.n-1);sound.click();}return;}
+  if(act==="restart"){buildLevel(L.n);sound.click();return;}
+  const i=o.userData.tile;
+  if(i==null||L.done)return;
+  if(tap(L,i)){tiles[i].spin=Math.PI/2;sound.click();refresh(true);}
+}
+$("b-next").onclick=()=>activate(buttons[2]);
+$("b-back").onclick=()=>activate(buttons[0]);
+$("b-restart").onclick=()=>activate(buttons[1]);
+
+// ---------- sound: synthesized, no files ----------
+const sound=(()=>{
+  let ac=null;
+  const tone=(f,d,type,vol,delay)=>{if(!ac)return;const t0=ac.currentTime+(delay||0),o=ac.createOscillator(),g=ac.createGain();o.type=type;o.frequency.value=f;g.gain.setValueAtTime(vol,t0);g.gain.exponentialRampToValueAtTime(0.0001,t0+d);o.connect(g);g.connect(ac.destination);o.start(t0);o.stop(t0+d);};
+  return{
+    unlock(){try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();if(ac.state==="suspended")ac.resume();}catch(e){}},
+    click(){tone(420,.05,"triangle",.05);},
+    water(){tone(300,.12,"sine",.04);tone(380,.12,"sine",.03,.06);},
+    chime(){[523,659,784,1046].forEach((f,k)=>tone(f,.25,"triangle",.05,k*.09));}
+  };
+})();
+
+// ---------- input: desktop mouse ----------
+const raycaster=new THREE.Raycaster(),ndc=new THREE.Vector2();
+let mouseHover=null;
+function pick(){const hit=raycaster.intersectObjects(tappables(),false)[0];return hit?hit.object:null;}
+renderer.domElement.addEventListener("pointermove",e=>{ndc.set(e.clientX/innerWidth*2-1,-(e.clientY/innerHeight)*2+1);raycaster.setFromCamera(ndc,camera);mouseHover=pick();});
+renderer.domElement.addEventListener("pointerdown",e=>{if(renderer.xr.isPresenting)return;ndc.set(e.clientX/innerWidth*2-1,-(e.clientY/innerHeight)*2+1);raycaster.setFromCamera(ndc,camera);activate(pick());});
+
+// ---------- input: XR hands (pinch at a tile, or touch it) and controllers ----------
+const handFactory=new XRHandModelFactory(),hands=[],rays=[],tmpM=new THREE.Matrix4(),tmpV=new THREE.Vector3();
+for(let k=0;k<2;k++){
+  const ctl=renderer.xr.getController(k);scene.add(ctl);
+  const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0),new THREE.Vector3(0,0,-1)]),new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:.45}));
+  line.scale.z=0.7;line.visible=false;ctl.add(line);
+  ctl.addEventListener("connected",()=>{line.visible=true;});
+  ctl.addEventListener("disconnected",()=>{line.visible=false;});
+  ctl.addEventListener("select",()=>activate(aim(ctl)));
+  rays.push(ctl);
+  const hand=renderer.xr.getHand(k);hand.add(handFactory.createHandModel(hand,"spheres"));scene.add(hand);
+  hands.push({hand,last:null,at:0});
+}
+function aim(ctl){
+  tmpM.identity().extractRotation(ctl.matrixWorld);
+  raycaster.ray.origin.setFromMatrixPosition(ctl.matrixWorld);raycaster.ray.direction.set(0,0,-1).applyMatrix4(tmpM);
+  return pick();
+}
+// a fingertip pressing down on a tile or button counts as one tap until the finger lifts away
+function touched(p){
+  for(const o of tappables()){
+    const q=o.worldToLocal(p.clone()),g=o.geometry;if(!g.boundingBox)g.computeBoundingBox();const bb=g.boundingBox;
+    if(q.x>bb.min.x&&q.x<bb.max.x&&q.z>bb.min.z&&q.z<bb.max.z&&q.y>bb.min.y-0.005&&q.y<bb.max.y+0.012)return o;
+  }
+  return null;
+}
+function poke(h,now){
+  const tip=h.hand.joints&&h.hand.joints["index-finger-tip"];
+  if(!tip||!tip.visible){h.last=null;return;}
+  tip.getWorldPosition(tmpV);
+  const o=touched(tmpV);
+  if(o&&o!==h.last&&now-h.at>250){h.at=now;activate(o);}
+  h.last=o;
+}
+
+// ---------- frame loop ----------
+const clock=new THREE.Clock();
+renderer.setAnimationLoop(()=>{
+  const dt=Math.min(clock.getDelta(),0.05),now=performance.now();
+  for(const t of tiles){
+    if(t.spin>0){t.spin=Math.max(0,t.spin-dt*Math.PI*4);t.arms.rotation.y=t.spin;}
+    if(t.flower){t.grow+=((wet.has(t.i)?1:0.35)-t.grow)*Math.min(1,dt*6);t.flower.scale.setScalar(t.grow);}
+  }
+  for(let i=0;i<RN;i++){rainPos[i*3+1]-=dt*0.25;if(rainPos[i*3+1]<0.01)rainPos[i*3+1]=0.14;}
+  rainGeo.attributes.position.needsUpdate=true;
+  // hover: highlight what the mouse or a hand ray points at
+  const hover=new Set();
+  if(renderer.xr.isPresenting){for(const ctl of rays)if(ctl.children[0].visible){const o=aim(ctl);if(o)hover.add(o);}for(const h of hands)poke(h,now);}
+  else if(mouseHover)hover.add(mouseHover);
+  for(const t of tiles)t.base.material=hover.has(t.base)?MAT.hover:L.cells[t.i].kind==="source"?MAT.srcBase:MAT.base;
+  for(const b of buttons)b.material=hover.has(b)?MAT.buttonHover:MAT.button;
+  renderer.render(scene,camera);
+});
+addEventListener("resize",()=>{if(renderer.xr.isPresenting)return;camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+
+// ---------- start, or #selftest ----------
+let startLevel=1;try{startLevel=clampLevel(+(localStorage.getItem("rainworks.level")||1));}catch(e){}
+if(location.hash==="#selftest"){
+  const t0=performance.now(),problems=selfTestLogic();
+  // also build and solve every level through the 3D code, to catch errors in it
+  for(let n=1;n<=LEVELS;n++){
+    try{
+      buildLevel(n);
+      L.cells.forEach((c,i)=>{for(let k=0;c.mask!==c.sol&&k<4;k++)activate(tiles[i].base);});
+      if(!L.done)problems.push(`level ${n}: solving through the 3D code did not finish the level`);
+      if(tiles.length!==L.w*L.h)problems.push(`level ${n}: ${tiles.length} tiles drawn`);
+      if(/NaN|undefined/.test(statusText().join(" ")))problems.push(`level ${n}: bad panel text "${statusText().join(" ")}"`);
+    }catch(err){problems.push(`level ${n} (3D): ${err&&err.stack||err}`);}
+  }
+  try{localStorage.removeItem("rainworks.level");for(let n=1;n<=LEVELS;n++)localStorage.removeItem("rainworks.stars."+n);}catch(e){}
+  const box=$("test");box.hidden=false;
+  box.textContent=`Rainworks self-test (v0.1): ${LEVELS} levels checked in ${Math.round(performance.now()-t0)} ms.\n`+(problems.length?`${problems.length} problem(s):\n`+problems.join("\n"):"No problems found.")+"\n\nClick anywhere on this panel to close it.";
+  box.onclick=()=>{box.hidden=true;location.hash="";};
+  console.log("Rainworks self-test:",problems.length,"problems",problems);
+  startLevel=1;
+}
+buildLevel(startLevel);
+</script>
+</body>
+</html>
